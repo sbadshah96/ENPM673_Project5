@@ -172,6 +172,25 @@ def refining_neighbor_map(new_map, min_size=10, radius=3):
     refined_n = closing(refined_new_map, square(radius))
     return refined_n, total_labels - 1
 
+def estimate_illumination_map(image, BS_val, neighbor_map, num_neighbor, p=0.5, f=2.0, max_iters=100, tol=1E-5):
+    direct_sig = image - BS_val
+    avg_space_clr = np.zeros(image.shape) # Test Later
+    avg_space_clr_prime = np.copy(avg_space_clr)
+    sizes = np.zeros(num_neighbor)
+    indices = [None] * num_neighbor
+    for num in range(1, num_neighbor + 1):
+        indices[num - 1] = np.where(neighbor_map == num)   # Test with this also np.asarray(a == label)
+        sizes[num - 1] = np.size(indices[num - 1][0])
+    for i in range(max_iters):
+        for num in range(1, num_neighbor + 1):
+            index = indices[num - 1]
+            size = sizes[num - 1] - 1
+            avg_space_clr_prime[index] = (1 / size) * (np.sum(avg_space_clr[index]) - avg_space_clr[index])
+        new_avg_space_clr = (direct_sig * p) + (avg_space_clr_prime * (1 - p))
+        if(np.max(np.abs(avg_space_clr - new_avg_space_clr)) < tol):
+            break
+        avg_space_clr = new_avg_space_clr
+    return f * denoise_bilateral(np.maximum(0, avg_space_clr))
 
 min_depth = 0.1
 max_depth = 1
@@ -194,5 +213,10 @@ if __name__ == "__main__":
 
     new_map, n = refining_neighbor_map(new_map, 50)
 
+    Red_illumination = estimate_illumination_map(image[:, :, 0], BS_red, new_map, n, p=0.5, f=2.0, max_iters=100, tol=1E-5)
+    Green_illumination = estimate_illumination_map(image[:, :, 1], BS_green, new_map, n, p=0.5, f=2.0, max_iters=100, tol=1E-5)
+    Blue_illumination = estimate_illumination_map(image[:, :, 2], BS_blue, new_map, n, p=0.5, f=2.0, max_iters=100, tol=1E-5)
+    
+    Total_illumination = np.stack([Red_illumination, Green_illumination, Blue_illumination], axis=2)
 
 
