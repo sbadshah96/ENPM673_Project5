@@ -218,6 +218,59 @@ def data_filter(X, Y, radius_frac=0.01):
             temp_Y.append(Y_s[i])
     return np.array(dX), np.array(dY)
 
+def calculate_wideband_attentuation(depth_image, lumen, r=6, max_value=10.0):
+    epsilon = 1E-8
+    Beta_D = np.minimum(max_value, -np.log(lumen + epsilon) / (np.maximum(0, depth_image) + epsilon))
+    masking = np.where(np.logical_and(depth_image > epsilon, lumen > epsilon), 1, 0)
+    refined_atts = denoise_bilateral(closing(np.maximum(0, Beta_D * masking), disk(r)))
+    return refined_atts, []
+
+def find_beta_D(depth_image, e, f, g, h):
+    return (e * np.exp(f * depth_image)) + (g * np.exp(h * depth_image))
+
+def refining_wideband_attentuation(depth_img, illumination, estimation, iterations=10, min_depth_fraction = 0.1, max_mean_loss_fraction=np.inf, l=1.0, radius_fraction=0.01):
+    epsilon = 1E-8
+    z_max, z_min = np.max(depth_img), np.min(depth_img)
+    min_depth = z_min + (min_depth_fraction * (z_max - z_min))
+    max_mean_loss = max_mean_loss_fraction * (z_max - z_min)
+    coeffs = None
+    min_loss = np.inf
+    lower_limit = [0, -100, 0, -100]
+    upper_limit = [100, 0, 100, 0]
+    indices = np.where(np.logical_and(illumination > 0, np.logical_and(depth_img > min_depth, estimation > epsilon)))
+    # indices = np.asarray(np.logical_and(illumination > 0, np.logical_and(depth_img > min_depth, estimation > epsilon )))
+    
+    def calculate_new_rc_depths(depth_img, illum, a, b, c, d):
+        E = 1E-5
+        result = -np.log(illum + E) / (find_beta_D(depth_img, a, b, c, d) + E)
+        return result
+    def calculate_loss(a, b, c, d):
+        return np.mean(np.abs(depth_img[indices] - calculate_new_rc_depths(depth_img[indices], illumination[indices], a, b, c, d)))
+    
+    dX, dY = data_filter(depth_img[indices], estimation[indices], radius_fraction)
+    for _ in range(iterations):
+        try:
+            est_depth_val, _ = sp.optimize.curve_fit(
+                f=find_beta_D,
+                xdata=dX,
+                ydata=dY,
+                p0=np.abs(np.random.random(4)) * np.array([1., -1., 1., -1.]),
+                bounds=(lower_limit, upper_limit))
+            loss = calculate_loss(*est_depth_val)
+            if loss < min_loss:
+                min_loss = loss
+                coeffs = est_depth_val
+        except RuntimeError as re:
+            print(re, file=sys.stderr)
+
+    if min_loss > max_mean_loss:
+        print('Warning: could not find accurate reconstruction. Switching to linear model.', flush=True)
+        m, b, _, _, _ = sp.stats.linregress(depth_img[indices], estimation[indices])
+        beta_d = (m * depth_img + b)
+        return l * beta_d, np.array([m, b])
+    print(f'Found best loss {min_loss}', flush=True)
+    beta_d = l * find_beta_D(depth_img, *coeffs)
+    return beta_d, coeffs
 
 min_depth = 0.1
 max_depth = 1
@@ -245,5 +298,14 @@ if __name__ == "__main__":
     Blue_illumination = estimate_illumination_map(image[:, :, 2], BS_blue, new_map, n, p=0.5, f=2.0, max_iters=100, tol=1E-5)
     
     Total_illumination = np.stack([Red_illumination, Green_illumination, Blue_illumination], axis=2)
+    
+    Red_Beta_D, _ = calculate_wideband_attentuation(depth_image, Red_illumination)
+    updated_red_beta_d, Red_coefs = refining_wideband_attentuation(depth_image, Red_illumination, Red_Beta_D, radius_fraction=0.01, l=1.0)
+    
+    Green_Beta_D, _ = calculate_wideband_attentuation(depth_image, Green_illumination)
+    updated_green_beta_d, Green_coefs = refining_wideband_attentuation(depth_image, Green_illumination, Green_Beta_D, radius_fraction=0.01, l=1.0)
+    
+    Blue_Beta_D, _ = calculate_wideband_attentuation(depth_image, Blue_illumination)
+    updated_blue_beta_d, Blue_coefs = refining_wideband_attentuation(depth_image, Blue_illumination, Blue_Beta_D, radius_fraction=0.01, l=1.0)
 
 
