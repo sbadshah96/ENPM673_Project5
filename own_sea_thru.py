@@ -272,8 +272,56 @@ def refining_wideband_attentuation(depth_img, illumination, estimation, iteratio
     beta_d = l * find_beta_D(depth_img, *coeffs)
     return beta_d, coeffs
 
+def image_scaling(image):
+    return (image - np.min(image)) / (np.max(image) - np.min(image))
+
+# White balance based on top 10% average values of blue and green channel
+def image_balancing_10(image):
+    green_d = 1.0 / np.mean(np.sort(image[:, :, 1], axis=None)[int(round(-1 * np.size(image[:, :, 0]) * 0.1)):])
+    blue_d = 1.0 / np.mean(np.sort(image[:, :, 2], axis=None)[int(round(-1 * np.size(image[:, :, 0]) * 0.1)):])
+    sum = green_d + blue_d
+    green_d = (green_d/sum)*2.0
+    blue_d = (blue_d/sum)*2.0
+    image[:, :, 0] *= (blue_d + green_d)/2
+    image[:, :, 1] *= green_d
+    image[:, :, 2] *= blue_d
+    return image
+
+# White balance with 'grey world' hypothesis - NOT USED HERE
+def image_balancing_gray(image):
+    green_d = 1.0 / np.mean(image[:, :, 1])
+    blue_d = 1.0 / np.mean(image[:, :, 2])
+    sum = green_d + blue_d
+    green_d = (green_d/sum)*2.0
+    blue_d = (blue_d/sum)*2.0
+    image[:, :, 0] *= (blue_d + green_d)/2
+    image[:, :, 1] *= green_d
+    image[:, :, 2] *= blue_d
+    return image
+
+# Reconstruct the scene and globally white balance based the Gray World Hypothesis
+def image_restoration(image,depth_image,updated_B,updated_beta_d,new_map):
+    restoration = (image - updated_B) * np.exp(updated_beta_d * np.expand_dims(depth_image, axis=2))
+    restoration = np.maximum(0.0, np.minimum(1.0, restoration))
+    restoration[new_map == 0] = 0
+    restoration = image_scaling(image_balancing_10(restoration))
+    restoration[new_map == 0] = image[new_map == 0]
+    return restoration
+
+# Reconstruct the scene and globally white balance without depth map - NOT USED HERE
+def image_restoration_S4(image, updated_B,total_illumination, new_map):
+    epsl = 1E-8
+    restoration = (image - updated_B) / (total_illumination + epsl)
+    restoration = np.maximum(0.0, np.minimum(1.0, restoration))
+    restoration[new_map == 0] = image[new_map == 0]
+    scaled_image = image_scaling(image_balancing_gray(restoration))
+    return scaled_image
+
+
+# Global Parameters
 min_depth = 0.1
 max_depth = 1
+equalization = True
 
 if __name__ == "__main__":
     image = "4_img_.png"
@@ -308,4 +356,15 @@ if __name__ == "__main__":
     Blue_Beta_D, _ = calculate_wideband_attentuation(depth_image, Blue_illumination)
     updated_blue_beta_d, Blue_coefs = refining_wideband_attentuation(depth_image, Blue_illumination, Blue_Beta_D, radius_fraction=0.01, l=1.0)
 
+    updated_B = np.stack([BS_red,BS_green,BS_blue],axis=2)
+    updated_beta_d = np.stack([updated_red_beta_d,updated_blue_beta_d,updated_green_beta_d],axis=2)
+    
+    output_image = image_restoration(image,depth_image,updated_B,updated_beta_d,new_map)
 
+    if equalization:
+        output_image = exposure.equalize_adapthist(np.array(output_image),clip_limit=0.03)
+        estimated_sigma = estimate_sigma(output_image, multichannel=True, average_sigmas=True)
+        output_image = denoise_tv_chambolle(output_image,estimated_sigma,multichannel=True)
+
+    cv2.imwrite('Recovered_image.jpg',output_image)
+    print('Sea-thru complete')
