@@ -52,12 +52,12 @@ def backscatter_estimation(image,depth_image,fraction=0.01,max_points=30,min_dep
     return np.array(R_point), np.array(G_point), np.array(B_point)
 
 
-def find_backscatter_values(BS_pts, depth_image, iterations=10, max_mean_loss_fraction=0.1):
+def calculate_backscatter_values(BS_pts, depth_image, iterations=10, max_mean_loss_fraction=0.1):
     BS_depth_val, BS_img_val = BS_pts[:, 0], BS_pts[:, 1]
     z_max, z_min = np.max(depth_image), np.min(depth_image)
     max_mean_loss = max_mean_loss_fraction * (z_max - z_min)
     coeffs = None
-    best_loss = np.inf
+    min_loss = np.inf
     lower_limit = [0,0,0,0]
     upper_limit = [1,5,1,5]
 
@@ -68,7 +68,7 @@ def find_backscatter_values(BS_pts, depth_image, iterations=10, max_mean_loss_fr
         loss_val = np.mean(np.abs(BS_img_val - estimate_coeffs(BS_depth_val, B_inf, beta_B, J_c, beta_D)))
         return loss_val
     
-    for _ in range(iterations):
+    for i in range(iterations):
         try:
             est_coeffs, _ = sp.optimize.curve_fit(
                 f=estimate_coeffs,
@@ -78,18 +78,99 @@ def find_backscatter_values(BS_pts, depth_image, iterations=10, max_mean_loss_fr
                 bounds=(lower_limit, upper_limit),
             )
             current_loss = estimate_loss(*est_coeffs)
-            if current_loss < best_loss:
-                best_loss = current_loss
+            if current_loss < min_loss:
+                min_loss = current_loss
                 coeffs = est_coeffs
         except RuntimeError as re:
             print(re, file=sys.stderr)
 
-    if best_loss > max_mean_loss:
+    if min_loss > max_mean_loss:
         print('Warning: could not find accurate reconstruction. Switching to linear model.', flush=True)
         m, b, _, _, _ = sp.stats.linregress(BS_depth_val, BS_img_val)
         y = (m * depth_image) + b
         return y, np.array([m, b])
     return estimate_coeffs(depth_image, *coeffs), coeffs
+
+def find_closest_label(new_map, begin_x, begin_y):
+    t = collections.deque()
+    t.append((begin_x, begin_y))
+    n_map_mask = np.zeros_like(new_map).astype(np.bool)
+    while not len(t) == 0:
+        x, y = t.pop()
+        if 0 <= x < new_map.shape[0] and 0 <= y < new_map.shape[1]:
+            if new_map[x, y] != 0:
+                return new_map[x, y]
+            n_map_mask[x, y] = True
+            if 0 <= x < new_map.shape[0] - 1:
+                x2, y2 = x + 1, y
+                if not n_map_mask[x2, y2]:
+                    t.append((x2, y2))
+            if 1 <= x < new_map.shape[0]:
+                x2, y2 = x - 1, y
+                if not n_map_mask[x2, y2]:
+                    t.append((x2, y2))
+            if 0 <= y < new_map.shape[1] - 1:
+                x2, y2 = x, y + 1
+                if not n_map_mask[x2, y2]:
+                    t.append((x2, y2))
+            if 1 <= y < new_map.shape[1]:
+                x2, y2 = x, y - 1
+                if not n_map_mask[x2, y2]:
+                    t.append((x2, y2))
+
+def construct_neighbor_map(depth_image, epsilon=0.05):
+    eps = (np.max(depth_image) - np.min(depth_image)) * epsilon
+    #Create a new array of depth image shape with zeroes 
+    new_map = np.zeros_like(depth_image).astype(np.int32)
+    neighborhoods = 1
+    #Run the loop until new map has zero value
+    while np.any(new_map == 0):
+        x_locs, y_locs = np.where(new_map == 0)
+        start_index = np.random.randint(0, len(x_locs))
+        start_x, start_y = x_locs[start_index], y_locs[start_index]
+        que = collections.deque()
+        que.append((start_x, start_y))
+        while bool(que) == True:
+            x, y = que.pop()
+            if np.abs(depth_image[x, y] - depth_image[start_x, start_y]) <= eps:
+                new_map[x, y] = neighborhoods
+                if 0 <= x < depth_image.shape[0] - 1:
+                    x2, y2 = x + 1, y
+                    if new_map[x2, y2] == 0:
+                        que.append((x2, y2))
+                if 1 <= x < depth_image.shape[0]:
+                    x2, y2 = x - 1, y
+                    if new_map[x2, y2] == 0:
+                        que.append((x2, y2))
+                if 0 <= y < depth_image.shape[1] - 1:
+                    x2, y2 = x, y + 1
+                    if new_map[x2, y2] == 0:
+                        que.append((x2, y2))
+                if 1 <= y < depth_image.shape[1]:
+                    x2, y2 = x, y - 1
+                    if new_map[x2, y2] == 0:
+                        que.append((x2, y2))
+        neighborhoods += 1
+    zeros_arr = sorted(zip(*np.unique(new_map[depth_image == 0], return_counts=True)), key=lambda x: x[1], reverse=True)
+    if len(zeros_arr) > 0:
+        new_map[new_map == zeros_arr[0][0]] = 0 
+    return new_map, neighborhoods - 1
+
+def refining_neighbor_map(new_map, min_size=10, radius=3):
+    pts, counts = np.unique(new_map, return_counts=True)
+    neighbor_sizes = sorted([(pt, count) for pt, count in zip(pts, counts)], key=lambda x: x[1], reverse=True)
+    refined_new_map = np.zeros_like(new_map)
+    total_labels = 1
+    for label, size in neighbor_sizes:
+        if size >= min_size and label != 0:
+            refined_new_map[new_map == label] = total_labels
+            total_labels += 1
+    for label, size in neighbor_sizes:
+        if size < min_size and label != 0:
+            for x, y in zip(*np.where(new_map == label)):
+                refined_new_map[x, y] = find_closest_label(refined_new_map, x, y)
+    refined_n = closing(refined_new_map, square(radius))
+    return refined_n, total_labels - 1
 
 
 min_depth = 0.1
@@ -105,9 +186,13 @@ if __name__ == "__main__":
 
     R_back,B_back,G_back = backscatter_estimation(image,depth_image,fraction=0.01,min_depth_perc=min_depth)
 
-    BS_red, red_coeffs = find_backscatter_values(R_back, depth_image, iterations=25)
-    BS_green, green_coeffs = find_backscatter_values(G_back, depth_image, iterations=25)
-    BS_blue, blue_coeffs = find_backscatter_values(B_back, depth_image, iterations=25)
+    BS_red, red_coeffs = calculate_backscatter_values(R_back, depth_image, iterations=25)
+    BS_green, green_coeffs = calculate_backscatter_values(G_back, depth_image, iterations=25)
+    BS_blue, blue_coeffs = calculate_backscatter_values(B_back, depth_image, iterations=25)
+
+    new_map, _ = construct_neighbor_map(depth_image, 0.08)
+
+    new_map, n = refining_neighbor_map(new_map, 50)
 
 
 
