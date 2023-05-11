@@ -192,6 +192,33 @@ def estimate_illumination_map(image, BS_val, neighbor_map, num_neighbor, p=0.5, 
         avg_space_clr = new_avg_space_clr
     return f * denoise_bilateral(np.maximum(0, avg_space_clr))
 
+def data_filter(X, Y, radius_frac=0.01):
+    indexes = np.argsort(X)
+    X_s = X[indexes]
+    Y_s = Y[indexes]
+    x_maximum, x_minimum = np.max(X), np.min(X)
+    radius = (radius_frac * (x_maximum - x_minimum))
+    dS = np.cumsum(X_s - np.roll(X_s, (1,)))
+    dX = [X_s[0]]
+    dY = [Y_s[0]]
+    temp_X = []
+    temp_Y = []
+    position = 0
+    for i in range(1, dS.shape[0]):
+        if dS[i] - dS[position] >= radius:
+            temp_X.append(X_s[i])
+            temp_Y.append(Y_s[i])
+            indexes = np.argsort(temp_Y)
+            med_idx = len(indexes) // 2
+            dX.append(temp_X[med_idx])
+            dY.append(temp_Y[med_idx])
+            position = i
+        else:
+            temp_X.append(X_s[i])
+            temp_Y.append(Y_s[i])
+    return np.array(dX), np.array(dY)
+
+
 min_depth = 0.1
 max_depth = 1
 
