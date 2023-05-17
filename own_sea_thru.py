@@ -1,39 +1,44 @@
 import collections
 import cv2 as cv2
 import sys
-# import argparse
 import numpy as np
-# import sklearn as sk
 import scipy as sp
-# import scipy.optimize
-# import scipy.stats
 import math
-# from PIL import Image
-# import rawpy
-# import matplotlib
+
 from matplotlib import pyplot as plt
 from skimage import exposure
 from skimage.restoration import denoise_bilateral, denoise_tv_chambolle, estimate_sigma
-from skimage.morphology import closing, opening, erosion, dilation, disk, diamond, square
+from skimage.morphology import closing, disk, square
 import tensorflow as tf
 
 
 def readImage(image, size_limit = 256):
     image = cv2.imread(image)
     resized_image = cv2.resize(image,(size_limit,size_limit),interpolation=cv2.INTER_AREA)
-    new_model = tf.keras.models.load_model('/Users/shreejay/Desktop/UMD/ENPM673/Projects/Project5/code/my_model')
+    resized_image = cv2.cvtColor(resized_image,cv2.COLOR_BGR2RGB)
+    resized_image = tf.image.convert_image_dtype(resized_image,tf.float32)
+
+    new_model = tf.keras.models.load_model('C:\\Users\\sandi\\Desktop\\Portfolio_Website\\ENPM673_Project5\\my_model')
+
+    cmap = plt.cm.jet
+    cmap.set_bad(color="black")
     d_image = data_generation(resized_image)
     depth_image = new_model.predict(d_image)
+    print("depth read 0:", depth_image.shape)
+
+    depth_image = depth_image.squeeze()
+    print("depth read 1:", depth_image.shape)
+
+    # depth_image = cmap(depth_image)
     # depth_image = depth_image[0]
 
-    cv2.imshow('depth', depth_image)
-    cv2.waitKey(0)
-    cv2.destroyAllWindows()
-    cv2.waitKey(1)
+    # cv2.imshow('depth', depth_image)
+    # cv2.waitKey(0)
+    # cv2.destroyAllWindows()
 
-    
     # print(depth_image.nonzero())
-    resized_image = np.array([resized_image])
+    # resized_image = np.array([resized_image])
+    print("depth read 2:", np.array(depth_image).shape)
 
     return np.float32(resized_image)/255.0, np.array(depth_image)
 
@@ -43,11 +48,13 @@ def data_generation(image):
         return x
 
 def depth_preprocess(depth_image, min_depth, max_depth):
+    print("depth zero zero: ", depth_image.shape)
     z_min = np.min(depth_image) + (min_depth * (np.max(depth_image) - np.min(depth_image)))
     z_max = np.min(depth_image) + (max_depth * (np.max(depth_image) - np.min(depth_image)))
     if max_depth != 0:
         depth_image[depth_image == 0] = z_max
     depth_image[depth_image < z_min] = 0
+    print("depth zero: ", depth_image.shape)
     return depth_image
 
 def backscatter_estimation(image,depth_image,fraction=0.01,max_points=30,min_depth_perc=0.0,limit=10):
@@ -60,21 +67,22 @@ def backscatter_estimation(image,depth_image,fraction=0.01,max_points=30,min_dep
     B_point = []
     for i in range(len(z_ranges) - 1):
         a, b = z_ranges[i], z_ranges[i+1]
-        indices = np.where(np.logical_and(depth_image > min_depth, 
-                                          np.logical_and(depth_image >= a, depth_image <= b)))
-        # indices = np.asarray(np.logical_and(depth_image > min_depth, np.logical_and(depth_image >= a,depth_image <= b ))).nonzero()
-        print("indices: ",indices)
+        # indices = np.where(np.logical_and(depth_image > min_depth, 
+        #                                   np.logical_and(depth_image >= a, depth_image <= b)))
+        indices = np.asarray(np.logical_and(depth_image > min_depth, np.logical_and(depth_image >= a,depth_image <= b ))).nonzero()
+        # print("indices: ",indices)
         indiced_norm, indiced_image, indiced_depth_image = image_norms[indices], image[indices], depth_image[indices]
         combined_data = sorted(zip(indiced_norm, indiced_image, indiced_depth_image), key=lambda x: x[0])
         points = combined_data[:min(math.ceil(fraction * len(combined_data)), max_points)]
         for _, image_point, depth_image_point in points:
-            R_point.extend((depth_image_point, image_point[0]))
-            G_point.extend((depth_image_point, image_point[1]))
-            B_point.extend((depth_image_point, image_point[2]))
+            R_point.append((depth_image_point, image_point[0]))
+            G_point.append((depth_image_point, image_point[1]))
+            B_point.append((depth_image_point, image_point[2]))
     return np.array(R_point), np.array(G_point), np.array(B_point)
 
 
 def calculate_backscatter_values(BS_points, depth_image, iterations=10, max_mean_loss_fraction=0.1):
+    print('depth_1:',depth_image.shape)
     BS_depth_val, BS_image_val = BS_points[:, 0], BS_points[:, 1]
     z_max, z_min = np.max(depth_image), np.min(depth_image)
     max_mean_loss = max_mean_loss_fraction * (z_max - z_min)
@@ -83,8 +91,9 @@ def calculate_backscatter_values(BS_points, depth_image, iterations=10, max_mean
     lower_limit = [0,0,0,0]
     upper_limit = [1,5,1,5]
 
-    def estimate_coeffs(depth_img_val, B_inf, beta_B, J_c, beta_D):
-        img_val = (B_inf * (1 - np.exp(-1 * beta_B * depth_img_val))) + (J_c * np.exp(-1 * beta_D * depth_img_val))
+    def estimate_coeffs(depth_image, B_inf, beta_B, J_c, beta_D):
+        img_val = (B_inf * (1 - np.exp(-1 * beta_B * depth_image))) + (J_c * np.exp(-1 * beta_D * depth_image))
+        # print('image val: ',img_val.shape)
         return img_val
     def estimate_loss(B_inf, beta_B, J_c, beta_D):
         loss_val = np.mean(np.abs(BS_image_val - estimate_coeffs(BS_depth_val, B_inf, beta_B, J_c, beta_D)))
@@ -111,6 +120,8 @@ def calculate_backscatter_values(BS_points, depth_image, iterations=10, max_mean
         m, b, _, _, _ = sp.stats.linregress(BS_depth_val, BS_image_val)
         y = (m * depth_image) + b
         return y, np.array([m, b])
+    print("depth image 2 shape:", depth_image.shape)
+    print("estimate: ", estimate_coeffs(depth_image, *coeffs).shape)
     return estimate_coeffs(depth_image, *coeffs), coeffs
 
 def find_closest_label(new_map, begin_x, begin_y):
@@ -359,23 +370,26 @@ max_depth = 1
 equalization = True
 
 if __name__ == "__main__":
-    image = "/Users/shreejay/Desktop/UMD/ENPM673/Projects/Project5/code/dataset/raw-890/4_img_.png"
-    image, depth_image = readImage(image)    
-    print('depth image: ',depth_image)
+    image = "C:\\Users\\sandi\\Desktop\\Portfolio_Website\\ENPM673_Project5\\4_img_.png"
+    resized_image, depth_image = readImage(image)    
+    # print('depth image: ',depth_image)
     depth_image = depth_preprocess(depth_image,min_depth,max_depth)
 
-    R_back,B_back,G_back = backscatter_estimation(image,depth_image,fraction=0.01,min_depth_perc=min_depth)
+    R_back,B_back,G_back = backscatter_estimation(resized_image,depth_image,fraction=0.01,min_depth_perc=min_depth)
     BS_red, red_coeffs = calculate_backscatter_values(R_back, depth_image, iterations=25)
     BS_green, green_coeffs = calculate_backscatter_values(G_back, depth_image, iterations=25)
     BS_blue, blue_coeffs = calculate_backscatter_values(B_back, depth_image, iterations=25)
+
+    print("red depth backscatter points:",BS_red)
+    print("red depth backscatter coeff: ",red_coeffs)
 
     new_map, _ = construct_neighbor_map(depth_image, 0.08)
 
     new_map, n = refining_neighbor_map(new_map, 50)
 
-    Red_illumination = estimate_illumination_map(image[:, :, 0], BS_red, new_map, n, p=0.5, f=2.0, max_iters=100, tol=1E-5)
-    Green_illumination = estimate_illumination_map(image[:, :, 1], BS_green, new_map, n, p=0.5, f=2.0, max_iters=100, tol=1E-5)
-    Blue_illumination = estimate_illumination_map(image[:, :, 2], BS_blue, new_map, n, p=0.5, f=2.0, max_iters=100, tol=1E-5)
+    Red_illumination = estimate_illumination_map(resized_image[:, :, 0], BS_red, new_map, n, p=0.5, f=2.0, max_iters=100, tol=1E-5)
+    Green_illumination = estimate_illumination_map(resized_image[:, :, 1], BS_green, new_map, n, p=0.5, f=2.0, max_iters=100, tol=1E-5)
+    Blue_illumination = estimate_illumination_map(resized_image[:, :, 2], BS_blue, new_map, n, p=0.5, f=2.0, max_iters=100, tol=1E-5)
     
     Total_illumination = np.stack([Red_illumination, Green_illumination, Blue_illumination], axis=2)
     
@@ -391,12 +405,12 @@ if __name__ == "__main__":
     updated_B = np.stack([BS_red,BS_green,BS_blue],axis=2)
     updated_beta_d = np.stack([updated_red_beta_d,updated_blue_beta_d,updated_green_beta_d],axis=2)
     
-    output_image = image_restoration(image,depth_image,updated_B,updated_beta_d,new_map)
+    output_image = image_restoration(resized_image,depth_image,updated_B,updated_beta_d,new_map)
 
     if equalization:
         output_image = exposure.equalize_adapthist(np.array(output_image),clip_limit=0.03)
-        estimated_sigma = estimate_sigma(output_image, multichannel=True, average_sigmas=True)
-        output_image = denoise_tv_chambolle(output_image,estimated_sigma,multichannel=True)
+        estimated_sigma = estimate_sigma(output_image, average_sigmas=True, channel_axis=-1)
+        output_image = denoise_tv_chambolle(output_image,estimated_sigma)
 
     cv2.imwrite('Recovered_image.jpg',output_image)
     print('Sea-thru complete')
