@@ -20,12 +20,18 @@ import tensorflow as tf
 
 def readImage(image, size_limit = 256):
     image = cv2.imread(image)
-    # depth_image = cv2.imread(depth_image)
     resized_image = cv2.resize(image,(size_limit,size_limit),interpolation=cv2.INTER_AREA)
+    new_model = tf.keras.models.load_model('/Users/shreejay/Desktop/UMD/ENPM673/Projects/Project5/code/my_model')
+    d_image = data_generation(resized_image)
+    depth_image = new_model.predict(d_image)
     resized_image = np.array([resized_image])
-    print(resized_image.shape)
-    # resized_depth_image = cv2.resize(depth_image,(size_limit,size_limit),interpolation=cv2.INTER_AREA)
-    return np.float32(resized_image)/255.0,resized_image
+
+    return np.float32(resized_image)/255.0, depth_image
+
+def data_generation(img):
+        x = np.empty((1, 256, 256, 3))
+        x[0,] = img
+        return x
 
 def depth_preprocess(depth_image, min_depth, max_depth):
     z_min = np.min(depth_image) + (min_depth * (np.max(depth_image) - np.min(depth_image)))
@@ -342,18 +348,11 @@ equalization = True
 
 if __name__ == "__main__":
     image = "/Users/shreejay/Desktop/UMD/ENPM673/Projects/Project5/code/dataset/reference-890/10139.png"
-    # depth_image = "4_img_.png"
-    resized_image_array, resized_image = readImage(image)    
-    # print(resized_image.shape)
-    new_model = tf.keras.models.load_model('/Users/shreejay/Desktop/UMD/ENPM673/Projects/Project5/code/my_model')
-    new_model.summary()
-
-    depth_image = visualize_depth_map(resized_image, test=True, model=new_model)
-    print(depth_image.shape)
-
+    image, depth_image = readImage(image)    
+    
     depth_image = depth_preprocess(depth_image,min_depth,max_depth)
 
-    R_back,B_back,G_back = backscatter_estimation(resized_image_array,depth_image,fraction=0.01,min_depth_perc=min_depth)
+    R_back,B_back,G_back = backscatter_estimation(image,depth_image,fraction=0.01,min_depth_perc=min_depth)
 
     BS_red, red_coeffs = calculate_backscatter_values(R_back, depth_image, iterations=25)
     BS_green, green_coeffs = calculate_backscatter_values(G_back, depth_image, iterations=25)
@@ -363,9 +362,9 @@ if __name__ == "__main__":
 
     new_map, n = refining_neighbor_map(new_map, 50)
 
-    Red_illumination = estimate_illumination_map(resized_image_array[:, :, 0], BS_red, new_map, n, p=0.5, f=2.0, max_iters=100, tol=1E-5)
-    Green_illumination = estimate_illumination_map(resized_image_array[:, :, 1], BS_green, new_map, n, p=0.5, f=2.0, max_iters=100, tol=1E-5)
-    Blue_illumination = estimate_illumination_map(resized_image_array[:, :, 2], BS_blue, new_map, n, p=0.5, f=2.0, max_iters=100, tol=1E-5)
+    Red_illumination = estimate_illumination_map(image[:, :, 0], BS_red, new_map, n, p=0.5, f=2.0, max_iters=100, tol=1E-5)
+    Green_illumination = estimate_illumination_map(image[:, :, 1], BS_green, new_map, n, p=0.5, f=2.0, max_iters=100, tol=1E-5)
+    Blue_illumination = estimate_illumination_map(image[:, :, 2], BS_blue, new_map, n, p=0.5, f=2.0, max_iters=100, tol=1E-5)
     
     Total_illumination = np.stack([Red_illumination, Green_illumination, Blue_illumination], axis=2)
     
@@ -381,7 +380,7 @@ if __name__ == "__main__":
     updated_B = np.stack([BS_red,BS_green,BS_blue],axis=2)
     updated_beta_d = np.stack([updated_red_beta_d,updated_blue_beta_d,updated_green_beta_d],axis=2)
     
-    output_image = image_restoration(resized_image_array,depth_image,updated_B,updated_beta_d,new_map)
+    output_image = image_restoration(image,depth_image,updated_B,updated_beta_d,new_map)
 
     if equalization:
         output_image = exposure.equalize_adapthist(np.array(output_image),clip_limit=0.03)
