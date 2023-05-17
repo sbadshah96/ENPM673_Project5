@@ -24,13 +24,22 @@ def readImage(image, size_limit = 256):
     new_model = tf.keras.models.load_model('/Users/shreejay/Desktop/UMD/ENPM673/Projects/Project5/code/my_model')
     d_image = data_generation(resized_image)
     depth_image = new_model.predict(d_image)
+    # depth_image = depth_image[0]
+
+    cv2.imshow('depth', depth_image)
+    cv2.waitKey(0)
+    cv2.destroyAllWindows()
+    cv2.waitKey(1)
+
+    
+    # print(depth_image.nonzero())
     resized_image = np.array([resized_image])
 
-    return np.float32(resized_image)/255.0, depth_image
+    return np.float32(resized_image)/255.0, np.array(depth_image)
 
-def data_generation(img):
+def data_generation(image):
         x = np.empty((1, 256, 256, 3))
-        x[0,] = img
+        x[0,] = image
         return x
 
 def depth_preprocess(depth_image, min_depth, max_depth):
@@ -51,7 +60,10 @@ def backscatter_estimation(image,depth_image,fraction=0.01,max_points=30,min_dep
     B_point = []
     for i in range(len(z_ranges) - 1):
         a, b = z_ranges[i], z_ranges[i+1]
-        indices = np.asarray(np.logical_and(depth_image > min_depth, np.logical_and(depth_image >= a,depth_image <= b ))).nonzero()
+        indices = np.where(np.logical_and(depth_image > min_depth, 
+                                          np.logical_and(depth_image >= a, depth_image <= b)))
+        # indices = np.asarray(np.logical_and(depth_image > min_depth, np.logical_and(depth_image >= a,depth_image <= b ))).nonzero()
+        print("indices: ",indices)
         indiced_norm, indiced_image, indiced_depth_image = image_norms[indices], image[indices], depth_image[indices]
         combined_data = sorted(zip(indiced_norm, indiced_image, indiced_depth_image), key=lambda x: x[0])
         points = combined_data[:min(math.ceil(fraction * len(combined_data)), max_points)]
@@ -63,7 +75,7 @@ def backscatter_estimation(image,depth_image,fraction=0.01,max_points=30,min_dep
 
 
 def calculate_backscatter_values(BS_points, depth_image, iterations=10, max_mean_loss_fraction=0.1):
-    BS_depth_val, BS_img_val = BS_points[:, 0], BS_points[:, 1]
+    BS_depth_val, BS_image_val = BS_points[:, 0], BS_points[:, 1]
     z_max, z_min = np.max(depth_image), np.min(depth_image)
     max_mean_loss = max_mean_loss_fraction * (z_max - z_min)
     coeffs = None
@@ -75,7 +87,7 @@ def calculate_backscatter_values(BS_points, depth_image, iterations=10, max_mean
         img_val = (B_inf * (1 - np.exp(-1 * beta_B * depth_img_val))) + (J_c * np.exp(-1 * beta_D * depth_img_val))
         return img_val
     def estimate_loss(B_inf, beta_B, J_c, beta_D):
-        loss_val = np.mean(np.abs(BS_img_val - estimate_coeffs(BS_depth_val, B_inf, beta_B, J_c, beta_D)))
+        loss_val = np.mean(np.abs(BS_image_val - estimate_coeffs(BS_depth_val, B_inf, beta_B, J_c, beta_D)))
         return loss_val
     
     for i in range(iterations):
@@ -83,7 +95,7 @@ def calculate_backscatter_values(BS_points, depth_image, iterations=10, max_mean
             est_coeffs, _ = sp.optimize.curve_fit(
                 f=estimate_coeffs,
                 xdata=BS_depth_val,
-                ydata=BS_img_val,
+                ydata=BS_image_val,
                 p0=np.random.random(4) * upper_limit,
                 bounds=(lower_limit, upper_limit),
             )
@@ -96,7 +108,7 @@ def calculate_backscatter_values(BS_points, depth_image, iterations=10, max_mean
 
     if min_loss > max_mean_loss:
         print('Warning: could not find accurate reconstruction. Switching to linear model.', flush=True)
-        m, b, _, _, _ = sp.stats.linregress(BS_depth_val, BS_img_val)
+        m, b, _, _, _ = sp.stats.linregress(BS_depth_val, BS_image_val)
         y = (m * depth_image) + b
         return y, np.array([m, b])
     return estimate_coeffs(depth_image, *coeffs), coeffs
@@ -347,13 +359,12 @@ max_depth = 1
 equalization = True
 
 if __name__ == "__main__":
-    image = "/Users/shreejay/Desktop/UMD/ENPM673/Projects/Project5/code/dataset/reference-890/10139.png"
+    image = "/Users/shreejay/Desktop/UMD/ENPM673/Projects/Project5/code/dataset/raw-890/4_img_.png"
     image, depth_image = readImage(image)    
-    
+    print('depth image: ',depth_image)
     depth_image = depth_preprocess(depth_image,min_depth,max_depth)
 
     R_back,B_back,G_back = backscatter_estimation(image,depth_image,fraction=0.01,min_depth_perc=min_depth)
-
     BS_red, red_coeffs = calculate_backscatter_values(R_back, depth_image, iterations=25)
     BS_green, green_coeffs = calculate_backscatter_values(G_back, depth_image, iterations=25)
     BS_blue, blue_coeffs = calculate_backscatter_values(B_back, depth_image, iterations=25)
